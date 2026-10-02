@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # قراءة البيانات من ملف .env أو البيئة
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8886353056:AAFVtqYm-2Tpz-dFI_a9RBGpnV4RMhgZsJ0")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8888797788:AAESoaHHyIm9yxPryp1AtexNCXMb8n63rZk")
 
 # تحويل معرفات الأدمن من نص إلى أرقام
 admin_env = os.getenv("ADMINS", "8855682617,8011795436")
